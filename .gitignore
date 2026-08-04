@@ -1,0 +1,19 @@
+# Arduino / PlatformIO build output
+.pio/
+build/
+*.bin
+*.elf
+*.map
+
+# Secrets — never commit WiFi credentials or API keys
+secrets.h
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# macOS
+.DS_Store
