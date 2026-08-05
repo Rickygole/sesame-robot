@@ -12,9 +12,12 @@ already here and unit-tested.
     python3 tools/companion/run.py                    # simulated robot
     python3 tools/companion/run.py --robot            # real, sesame.local
     python3 tools/companion/run.py --robot 192.168.4.1
+    python3 tools/companion/run.py --brain cascade     # + optional local LLM
 
 The real and simulated robots expose the SAME interface, so nothing
-above this file knows which one it is driving.
+above this file knows which one it is driving. Likewise --brain: the
+default ('rules') is the rule parser alone, unchanged from before that
+flag existed. See sesame_voice/brain/ and this directory's README.
 """
 
 import os
@@ -22,9 +25,33 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from sesame_voice.brain import BRAIN_NAMES, build_brain  # noqa: E402
 from sesame_voice.io.mock_robot import MockRobot  # noqa: E402
 from sesame_voice.io.robot_http import RobotHttp  # noqa: E402
 from sesame_voice.session import KEEPALIVE_HZ, Session  # noqa: E402
+
+
+def select_brain(argv):
+    """--brain cascade also asks a local Ollama model when the rule
+    parser cannot place an utterance at all; --brain rules (or no flag)
+    is the rule parser alone, exactly as before this flag existed."""
+    name = "rules"
+    if "--brain" in argv:
+        i = argv.index("--brain")
+        if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+            name = argv[i + 1]
+    if name not in BRAIN_NAMES:
+        sys.stdout.write(
+            "unknown --brain '%s'; using 'rules' (choices: %s)\n"
+            % (name, ", ".join(BRAIN_NAMES)))
+        name = "rules"
+    brain = build_brain(name)
+    if name == "cascade" and not brain.llm.available():
+        sys.stdout.write(
+            "note: --brain cascade is on, but no Ollama model is reachable "
+            "at %s -- behaving exactly like --brain rules until one is. "
+            "See tools/companion/README.md.\n" % brain.llm.host)
+    return brain
 
 
 def build_robot(argv):
@@ -63,7 +90,8 @@ Ctrl-C or 'quit' to exit.
 
 def main():
     robot, is_real = build_robot(sys.argv[1:])
-    session = Session(robot)
+    brain = select_brain(sys.argv[1:])
+    session = Session(robot, brain=brain)
     sys.stdout.write(BANNER)
     if is_real:
         sys.stdout.write(
