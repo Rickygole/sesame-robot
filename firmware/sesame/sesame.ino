@@ -20,7 +20,11 @@
 #include <Arduino.h>
 
 #include "config.h"
+#include "src/board/display.h"
 #include "src/board/servo_bank.h"
+#include "src/board/storage.h"
+#include "src/net/control_server.h"
+#include "src/net/mailbox.h"
 #include "src/core/calibration.h"
 #include "src/core/command.h"
 #include "src/core/gait.h"
@@ -50,6 +54,12 @@ Mode g_mode = Mode::Stand;
 
 JointPose g_desired;
 uint32_t g_seq = 0;
+
+sesame::Display g_display;
+sesame::Storage g_storage;
+sesame::Mailbox g_mailbox;
+sesame::ControlServer g_server;
+bool g_estopped = false;
 
 GaitScheduler g_gait;
 LegGeometry g_geo[kLegCount];
@@ -133,16 +143,27 @@ void printStatus() {
 }
 
 void handleCommand(const Command& cmd) {
+  // While latched, refuse anything that could move the robot. Only an
+  // explicit stand/rest clears it -- see CmdType::EStop below.
+  if (g_estopped && cmd.type != CmdType::Stand && cmd.type != CmdType::Rest &&
+      cmd.type != CmdType::EStop && cmd.type != CmdType::Detach) {
+    Serial.println(F("err estopped -- send 'stand' or 'rest' to clear"));
+    return;
+  }
+
   switch (cmd.type) {
     case CmdType::Stand:
       g_desired = standPose();
       g_mode = Mode::Stand;
+      g_estopped = false;
       if (!g_bank.attached()) g_bank.attachAll();
+      g_display.setFace(sesame::Face::Neutral);
       Serial.println(F("ok stand"));
       break;
     case CmdType::Rest:
       g_desired = restPose();
       g_mode = Mode::Rest;
+      g_estopped = false;
       if (!g_bank.attached()) g_bank.attachAll();
       Serial.println(F("ok rest"));
       break;
@@ -155,9 +176,16 @@ void handleCommand(const Command& cmd) {
       // Cut torque immediately. Holding a pose still draws current and
       // can still strip a gear if something is jammed; detaching is the
       // only true "stop".
+      //
+      // LATCHES. Once tripped, motion commands are refused until an
+      // explicit `stand` or `rest` clears it. An e-stop you can undo by
+      // accident is not an e-stop.
       g_bank.detachAll();
       g_mode = Mode::Detached;
-      Serial.println(F("ok estop -- servos detached"));
+      g_estopped = true;
+      g_display.setFace(sesame::Face::Angry);
+      Serial.println(F("ok estop -- servos detached, LATCHED"));
+      Serial.println(F("send 'stand' or 'rest' to clear"));
       break;
     case CmdType::Detach:
       g_bank.detachAll();
@@ -195,10 +223,13 @@ void handleCommand(const Command& cmd) {
       break;
     }
     case CmdType::SaveCal:
-      // NVS persistence is a later stage. Say so rather than silently
-      // succeeding -- a calibration you think is saved and isn't costs a
-      // full recalibration on the next power cycle.
-      Serial.println(F("err savecal not implemented (stage 1b, NVS)"));
+      if (g_storage.save(g_cal)) {
+        Serial.println(F("ok savecal -- persisted, survives power cycle"));
+      } else {
+        // Say so loudly. A calibration you believe is saved and is not
+        // costs a full recalibration at the next power-on.
+        Serial.println(F("err savecal FAILED -- calibration NOT persisted"));
+      }
       break;
     case CmdType::Drive: {
       const DrivePayload& d = cmd.payload.drive;
@@ -225,9 +256,17 @@ void handleCommand(const Command& cmd) {
     case CmdType::PlayClip:
       Serial.println(F("err playclip not implemented (stage 2)"));
       break;
-    case CmdType::SetFace:
-      Serial.println(F("err setface not implemented (stage 1b, OLED)"));
+    case CmdType::SetFace: {
+      const uint8_t id = cmd.payload.setFace.faceId;
+      if (id >= uint8_t(sesame::Face::Count)) {
+        Serial.println(F("err face id"));
+        break;
+      }
+      g_display.setFace(sesame::Face(id));
+      Serial.print(F("ok setface "));
+      Serial.println(faceName(FaceId(id)));
       break;
+    }
     default:
       Serial.println(F("err unhandled"));
       break;
@@ -274,7 +313,23 @@ void setup() {
   Serial.println();
   Serial.println(F("sesame firmware -- stage 1a"));
 
+  if (g_display.begin()) {
+    g_display.setFace(sesame::Face::Sleep);
+    for (uint8_t i = 0; i < 8; ++i) g_display.flushChunk();  // setup() only
+  } else {
+    // Not fatal -- the robot walks fine without a face. Usually SDA/SCL
+    // swapped, or the panel answers at 0x3D rather than 0x3C.
+    Serial.println(F("warn: no SSD1306 at 0x3C -- check I2C wiring"));
+  }
+
   applyDefaults(&g_cal);
+  // A stored calibration replaces the defaults only if magic, version
+  // and CRC all check out; otherwise the defaults stand.
+  if (g_storage.begin() && g_storage.load(&g_cal)) {
+    Serial.println(F("calibration loaded from flash"));
+  } else {
+    Serial.println(F("no stored calibration -- using defaults"));
+  }
   g_bank.begin(g_cal);
 
   sesame::buildLegGeometry(g_geo);
@@ -300,6 +355,23 @@ void setup() {
   g_desired = standPose();
   g_bank.homeSequenced(g_desired, 100);
   g_mode = Mode::Stand;
+  g_display.setFace(sesame::Face::Neutral);
+
+  // Network last: the robot must be mechanically safe before it starts
+  // accepting commands from anywhere.
+  g_mailbox.begin();
+  if (g_server.begin(&g_mailbox)) {
+    Serial.print(F("control surface at http://"));
+    Serial.println(g_server.ipText());
+    if (g_server.connectedToNetwork()) {
+      Serial.println(F("joined your WiFi -- also on http://sesame.local"));
+    } else {
+      Serial.println(F("AP only -- connect to the 'Sesame' network"));
+    }
+    g_display.setStatus(g_server.ipText());
+  } else {
+    Serial.println(F("warn: access point failed to start"));
+  }
 
   Serial.print(F("tick "));
   Serial.print(sesame::kTickMs);
@@ -310,6 +382,14 @@ void loop() {
   static TickType_t last = xTaskGetTickCount();
 
   pollSerial();
+
+  // Commands from the network arrive here, having been parsed on core 0
+  // by the SAME parseCommand() the serial CLI uses. One command grammar,
+  // one set of tests, two transports.
+  Command netCmd;
+  while (g_mailbox.takeCommand(&netCmd)) {
+    handleCommand(netCmd);
+  }
 
   const float dt = float(sesame::kTickMs) * 0.001f;
 
@@ -342,6 +422,27 @@ void loop() {
         applySlew(g_bank.lastWritten(), g_desired, g_limits, dt);
     g_bank.writePose(r.applied);
     g_throttle = r.throttle;
+  }
+
+  // ONE OLED page per tick (~2.9ms). A full Adafruit display() call
+  // pushes 1024 bytes in one go, roughly 23ms -- it would blow the
+  // entire 20ms budget and jitter every servo update behind the screen.
+  g_display.tick(dt);
+  g_display.flushChunk();
+
+  // Publish a snapshot for /status. Fixed-size POD copied under a
+  // spinlock held for about a microsecond.
+  {
+    sesame::RobotState st;
+    st.mode = uint8_t(g_mode);
+    st.faceId = uint8_t(g_display.face());
+    st.attached = g_bank.attached();
+    st.estopped = g_estopped;
+    st.throttle = g_throttle;
+    st.seq = g_seq;
+    st.uptimeMs = millis();
+    st.pose = g_bank.lastWritten();
+    g_mailbox.publish(st);
   }
 
   // Fixed-rate tick. vTaskDelayUntil, not delay(), so jitter in the work
