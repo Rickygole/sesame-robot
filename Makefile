@@ -25,7 +25,11 @@ SKETCH   := firmware/sesame
 # Override the auto-detected port with: make flash PORT=/dev/cu.usbserial-XXXX
 PORT     ?=
 
-.PHONY: all test sim clean verify flash monitor ports
+# --- Companion (voice assistant) -------------------------------------
+# Pure-python, stdlib only. No venv, no pip, no robot required.
+COMPANION := tools/companion
+
+.PHONY: all test sim clean verify flash monitor ports voice voice-test
 
 all: test
 
@@ -57,6 +61,15 @@ sim: build/sim_main
 
 clean:
 	rm -rf build
+
+# Talk to a simulated robot. No microphone, no permissions, no hardware.
+voice:
+	python3 $(COMPANION)/run.py
+
+# Headless tests for the companion's pure core. Stdlib unittest, so
+# there is nothing to install.
+voice-test:
+	python3 -m unittest discover -s $(COMPANION)/tests -q
 
 # Compile the sketch for ESP32. Needs no board attached -- this is the
 # check to run after every edit.
