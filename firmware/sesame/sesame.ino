@@ -6,12 +6,14 @@
 // the host via `make test` from the repo root), src/board/ is the
 // hardware layer.
 //
-// STAGE 1a. Implemented: servo bring-up, calibration, pose hold, slew
-// limiting, serial CLI. NOT yet implemented: gait/drive, OLED, WiFi.
-// `drive` intentionally reports unimplemented rather than running the
-// current gait code, whose bodyHeightMm/stepHeightMm parameters do not
-// yet mean what they say (see docs/ -- the planner emits 3D foot targets
-// but a 2-DOF leg can only reach a 2D surface).
+// Implemented: servo bring-up, calibration, pose hold, slew limiting,
+// serial CLI, and walking (crawl gait, forward/back/turn/arc) with a
+// drive watchdog. NOT yet implemented: OLED face, WiFi, NVS-persisted
+// calibration, IMU/ultrasonic.
+//
+// There is deliberately no strafe. A 2-DOF leg's achievable foot motion
+// at neutral stance is purely tangential to its hip circle, so lateral
+// authority is exactly zero -- see GaitCommand in src/core/gait.h.
 //
 // Board settings: ESP32 Dev Module, Arduino Runs On = Core 1.
 
@@ -21,9 +23,12 @@
 #include "src/board/servo_bank.h"
 #include "src/core/calibration.h"
 #include "src/core/command.h"
+#include "src/core/gait.h"
+#include "src/core/geometry.h"
 #include "src/core/pose.h"
 #include "src/core/slew.h"
 #include "src/core/types.h"
+#include "src/robot_config.h"
 
 // The motion tick assumes loop() runs on core 1, leaving core 0 for the
 // WiFi/network task added in a later stage. Tools > Arduino Runs On.
@@ -40,11 +45,19 @@ ServoBank g_bank;
 Calibration g_cal;
 MotionLimits g_limits;
 
-enum class Mode : uint8_t { Hold, Stand, Rest, Manual, Detached };
+enum class Mode : uint8_t { Hold, Stand, Rest, Manual, Drive, Detached };
 Mode g_mode = Mode::Stand;
 
 JointPose g_desired;
 uint32_t g_seq = 0;
+
+GaitScheduler g_gait;
+LegGeometry g_geo[kLegCount];
+// Throttle from the previous tick, fed back into the gait clock so the
+// gait stays coherent under power limiting rather than the pose
+// distorting. This is the whole reason step() takes a throttle.
+float g_throttle = 1.f;
+uint32_t g_lastDriveMs = 0;
 
 char g_line[kMaxCommandLineLen];
 uint8_t g_lineLen = 0;
@@ -90,7 +103,9 @@ void printHelp() {
   Serial.println(F("  stand | rest | stop | estop | detach"));
   Serial.println(F("  setjoint <0-7> <deg>      logical index, see types.h"));
   Serial.println(F("  setcal <j> <usMin> <usMax> <trim> <inv 0|1> <min> <max>"));
-  Serial.println(F("  drive ...                 NOT IMPLEMENTED (stage 2)"));
+  Serial.println(F("  drive <vx> <omega> <bodyH> <stepH>   mm/s, deg/s, mm, mm"));
+  Serial.println(F("        no strafe: a 2-DOF leg has no lateral authority"));
+  Serial.println(F("        resend within 500ms or it returns to stand"));
   Serial.println(F("  help | status"));
 }
 
@@ -101,8 +116,11 @@ void printStatus() {
     case Mode::Stand: Serial.print(F("stand")); break;
     case Mode::Rest: Serial.print(F("rest")); break;
     case Mode::Manual: Serial.print(F("manual")); break;
+    case Mode::Drive: Serial.print(F("drive")); break;
     case Mode::Detached: Serial.print(F("detached")); break;
   }
+  Serial.print(F(" throttle="));
+  Serial.print(g_throttle, 2);
   Serial.print(F(" attached="));
   Serial.print(g_bank.attached() ? 1 : 0);
   Serial.print(F(" pose="));
@@ -182,9 +200,28 @@ void handleCommand(const Command& cmd) {
       // full recalibration on the next power cycle.
       Serial.println(F("err savecal not implemented (stage 1b, NVS)"));
       break;
-    case CmdType::Drive:
-      Serial.println(F("err drive not implemented (stage 2, gait)"));
+    case CmdType::Drive: {
+      const DrivePayload& d = cmd.payload.drive;
+      GaitCommand gc;
+      gc.vxMmPerSec = d.vx;
+      gc.omegaDegPerSec = d.omega;
+      gc.bodyHeightMm = (d.bodyHeightMm > 0.f)
+                            ? d.bodyHeightMm
+                            : sesame::kDefaultBodyHeightFrac * g_geo[0].legMm;
+      gc.stepHeightMm = (d.stepHeightMm > 0.f)
+                            ? d.stepHeightMm
+                            : sesame::kDefaultStepHeightFrac * g_geo[0].legMm;
+      gc.maxStrideMm = 0.f;
+      g_gait.setCommand(gc);
+      if (!g_bank.attached()) g_bank.attachAll();
+      g_mode = Mode::Drive;
+      g_lastDriveMs = millis();
+      Serial.print(F("ok drive vx="));
+      Serial.print(d.vx, 1);
+      Serial.print(F(" omega="));
+      Serial.println(d.omega, 1);
       break;
+    }
     case CmdType::PlayClip:
       Serial.println(F("err playclip not implemented (stage 2)"));
       break;
@@ -240,6 +277,10 @@ void setup() {
   applyDefaults(&g_cal);
   g_bank.begin(g_cal);
 
+  sesame::buildLegGeometry(g_geo);
+  g_gait.setGeometry(g_geo);
+  g_gait.setGait(kCrawl);  // duty 0.75 -- 3 feet down at all times
+
   uint8_t bad = 0;
   if (!g_bank.selfTest(&bad)) {
     // Almost always the wrong ESP32Servo (issue #103: writing one servo
@@ -270,13 +311,37 @@ void loop() {
 
   pollSerial();
 
+  const float dt = float(sesame::kTickMs) * 0.001f;
+
+  // Drive watchdog. If the controller stops talking mid-stride -- app
+  // crashed, WiFi dropped, USB unplugged -- the robot must not keep
+  // walking. Blend back to Stand rather than halting instantly, because
+  // an instant switch is exactly the large step this design spends its
+  // effort avoiding.
+  if (g_mode == Mode::Drive &&
+      (millis() - g_lastDriveMs) > sesame::kDriveWatchdogMs) {
+    g_desired = standPose();
+    g_mode = Mode::Stand;
+    Serial.println(F("drive watchdog: no command in 500ms, standing"));
+  }
+
+  if (g_mode == Mode::Drive) {
+    LegAngles ang[kLegCount];
+    GaitReport rep;
+    g_gait.step(dt, g_throttle, ang, rep);
+    for (uint8_t i = 0; i < kLegCount; ++i) {
+      g_desired.deg[logicalIndex(Leg(i), Joint::Hip)] = ang[i].hipDeg;
+      g_desired.deg[logicalIndex(Leg(i), Joint::Knee)] = ang[i].kneeDeg;
+    }
+  }
+
   if (g_mode != Mode::Detached) {
     // applySlew is total: any non-finite input holds position rather than
     // propagating, so nothing here can produce an unsafe pulse width.
     const SlewResult r =
-        applySlew(g_bank.lastWritten(), g_desired, g_limits,
-                  float(sesame::kTickMs) * 0.001f);
+        applySlew(g_bank.lastWritten(), g_desired, g_limits, dt);
     g_bank.writePose(r.applied);
+    g_throttle = r.throttle;
   }
 
   // Fixed-rate tick. vTaskDelayUntil, not delay(), so jitter in the work
