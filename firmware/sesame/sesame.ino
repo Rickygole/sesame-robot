@@ -6,10 +6,18 @@
 // the host via `make test` from the repo root), src/board/ is the
 // hardware layer.
 //
-// Implemented: servo bring-up, calibration, pose hold, slew limiting,
-// serial CLI, and walking (crawl gait, forward/back/turn/arc) with a
-// drive watchdog. NOT yet implemented: OLED face, WiFi, NVS-persisted
-// calibration, IMU/ultrasonic.
+// Implemented: servo bring-up, calibration (persisted to NVS), pose
+// hold, slew limiting, serial CLI, walking (crawl gait,
+// forward/back/turn/arc) with a drive watchdog, a latching e-stop, an
+// OLED face, and a WiFi control surface with an HTTP API.
+//
+// NOT implemented: IMU balance and ultrasonic obstacle avoidance. The
+// envelope carries an ObstacleState seam for the latter, but nothing can
+// currently produce anything except Clear -- see src/core/envelope.h.
+// Obstacle avoidance does NOT work; the interface merely exists.
+//
+// Safety ordering, which is load-bearing: envelope clamps the TARGET,
+// then slew limits the RATE. Two different jobs. Nothing bypasses either.
 //
 // There is deliberately no strafe. A 2-DOF leg's achievable foot motion
 // at neutral stance is purely tangential to its hip circle, so lateral
@@ -27,6 +35,7 @@
 #include "src/net/mailbox.h"
 #include "src/core/calibration.h"
 #include "src/core/command.h"
+#include "src/core/envelope.h"
 #include "src/core/gait.h"
 #include "src/core/geometry.h"
 #include "src/core/pose.h"
@@ -55,11 +64,15 @@ Mode g_mode = Mode::Stand;
 JointPose g_desired;
 uint32_t g_seq = 0;
 
+// Safety gate. Every Drive request passes through this BEFORE the gait
+// sees it: envelope clamps the TARGET, slew limits the RATE. Two
+// different jobs, both mandatory, in that order. Nothing bypasses either.
+Envelope g_envelope;
+
 sesame::Display g_display;
 sesame::Storage g_storage;
 sesame::Mailbox g_mailbox;
 sesame::ControlServer g_server;
-bool g_estopped = false;
 
 GaitScheduler g_gait;
 LegGeometry g_geo[kLegCount];
@@ -145,7 +158,7 @@ void printStatus() {
 void handleCommand(const Command& cmd) {
   // While latched, refuse anything that could move the robot. Only an
   // explicit stand/rest clears it -- see CmdType::EStop below.
-  if (g_estopped && cmd.type != CmdType::Stand && cmd.type != CmdType::Rest &&
+  if (g_envelope.estopped() && cmd.type != CmdType::Stand && cmd.type != CmdType::Rest &&
       cmd.type != CmdType::EStop && cmd.type != CmdType::Detach) {
     Serial.println(F("err estopped -- send 'stand' or 'rest' to clear"));
     return;
@@ -155,7 +168,7 @@ void handleCommand(const Command& cmd) {
     case CmdType::Stand:
       g_desired = standPose();
       g_mode = Mode::Stand;
-      g_estopped = false;
+      g_envelope.clearEstop();
       if (!g_bank.attached()) g_bank.attachAll();
       g_display.setFace(sesame::Face::Neutral);
       Serial.println(F("ok stand"));
@@ -163,7 +176,7 @@ void handleCommand(const Command& cmd) {
     case CmdType::Rest:
       g_desired = restPose();
       g_mode = Mode::Rest;
-      g_estopped = false;
+      g_envelope.clearEstop();
       if (!g_bank.attached()) g_bank.attachAll();
       Serial.println(F("ok rest"));
       break;
@@ -182,7 +195,7 @@ void handleCommand(const Command& cmd) {
       // accident is not an e-stop.
       g_bank.detachAll();
       g_mode = Mode::Detached;
-      g_estopped = true;
+      g_envelope.triggerEstop();
       g_display.setFace(sesame::Face::Angry);
       Serial.println(F("ok estop -- servos detached, LATCHED"));
       Serial.println(F("send 'stand' or 'rest' to clear"));
@@ -243,14 +256,35 @@ void handleCommand(const Command& cmd) {
                             ? d.stepHeightMm
                             : sesame::kDefaultStepHeightFrac * g_geo[0].legMm;
       gc.maxStrideMm = 0.f;
-      g_gait.setCommand(gc);
+
+      const EnvelopeResult env = g_envelope.apply(
+          gc, cmd.seq, float(millis()) * 0.001f, ObstacleState::Clear,
+          g_geo[0], g_gait.gait());
+      if (!env.accepted) {
+        Serial.print(F("err drive rejected: "));
+        Serial.println(rejectReasonName(env.reason));
+        break;
+      }
+
+      g_gait.setCommand(env.clamped);
       if (!g_bank.attached()) g_bank.attachAll();
       g_mode = Mode::Drive;
       g_lastDriveMs = millis();
+
+      // Report ACHIEVED, not requested. If the envelope modified the
+      // command, say so -- silently clamping is how a knob starts lying.
       Serial.print(F("ok drive vx="));
-      Serial.print(d.vx, 1);
+      Serial.print(env.clamped.vxMmPerSec, 1);
       Serial.print(F(" omega="));
-      Serial.println(d.omega, 1);
+      Serial.print(env.clamped.omegaDegPerSec, 1);
+      if (env.wasClamped) {
+        Serial.print(F("  (CLAMPED from "));
+        Serial.print(d.vx, 1);
+        Serial.print(' ');
+        Serial.print(d.omega, 1);
+        Serial.print(')');
+      }
+      Serial.println();
       break;
     }
     case CmdType::PlayClip:
@@ -437,7 +471,7 @@ void loop() {
     st.mode = uint8_t(g_mode);
     st.faceId = uint8_t(g_display.face());
     st.attached = g_bank.attached();
-    st.estopped = g_estopped;
+    st.estopped = g_envelope.estopped();
     st.throttle = g_throttle;
     st.seq = g_seq;
     st.uptimeMs = millis();
