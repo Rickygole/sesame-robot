@@ -48,7 +48,27 @@ DEFAULT_MODEL = "llama3.2:1b"
 # already answered (that is the only time this brain is even asked), so
 # there is nothing waiting on this beyond an optional second opinion.
 CONNECT_TIMEOUT_S = 2.0
-GENERATE_TIMEOUT_S = 6.0
+
+# Generation deadline.
+#
+# MEASURED, not guessed. On this machine qwen2.5:7b answers this prompt
+# in ~6s and qwen2.5:14b in 6-11s, so the original 6s default meant the
+# fallback silently never fired: every request hit the deadline, returned
+# UNKNOWN, and the feature looked like it simply did not work.
+#
+# 20s is chosen so a mid-size model on a laptop actually gets to answer.
+# It is deliberately generous because this path is only reached when the
+# rule parser has ALREADY failed -- the alternative is not a fast answer,
+# it is no answer at all.
+#
+# For VOICE, 20s of silence is unacceptable UX, so run_voice.py passes a
+# shorter deadline. A small model (llama3.2:1b, ~1.3GB) is what makes
+# this usable by voice; see the README.
+GENERATE_TIMEOUT_S = 20.0
+
+# Voice cannot tolerate a long pause -- the robot appears to have frozen.
+# Better to give up and say "I didn't get that" than to stare silently.
+VOICE_GENERATE_TIMEOUT_S = 4.0
 
 # Everything a model is allowed to name. UNKNOWN is deliberately excluded
 # from the choices offered to the model: a model "choosing" to hedge with
@@ -209,6 +229,10 @@ class OllamaBrain(Brain):
         self._preferred_model = model
         self.connect_timeout_s = connect_timeout_s
         self.generate_timeout_s = generate_timeout_s
+        # Why the last interpret() failed, or None. Lets the caller
+        # distinguish "the model timed out" from "the model genuinely
+        # could not place this utterance" -- see interpret().
+        self.last_error: Optional[str] = None
 
     def _list_models(self) -> List[str]:
         req = urllib.request.Request(self.host + "/api/tags")
@@ -269,8 +293,21 @@ class OllamaBrain(Brain):
         try:
             model = self._pick_model()
             if model is None:
+                self.last_error = "no model available"
                 return Utterance(Intent.UNKNOWN, Slots(), source="ollama")
             raw = self._generate(model, utterance, ctx)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 -- see the comment above
+            # Record WHY. A silent UNKNOWN is indistinguishable from "the
+            # model genuinely could not place this", which is how a
+            # timeout masquerades as a working feature that just never
+            # helps. The caller can surface this.
+            name = type(exc).__name__
+            if "timeout" in str(exc).lower() or name in ("timeout", "TimeoutError"):
+                self.last_error = (
+                    "model timed out after %.0fs -- try a smaller model "
+                    "(see tools/companion/README.md)" % self.generate_timeout_s)
+            else:
+                self.last_error = "%s: %s" % (name, exc)
             return Utterance(Intent.UNKNOWN, Slots(), source="ollama")
+        self.last_error = None
         return validate_response(raw)
