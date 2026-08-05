@@ -2,14 +2,12 @@
 
 #include <string.h>
 
+#include "mathutil.h"
+
 namespace sesame {
 namespace core {
 
 namespace {
-inline float clampf(float v, float lo, float hi) {
-  return v < lo ? lo : (v > hi ? hi : v);
-}
-
 // Appends raw bytes of a little-endian-encoded value into buf, returns
 // the new offset. Kept explicit (rather than reinterpret_cast'ing whole
 // structs) so the CRC is independent of compiler struct padding and
@@ -71,23 +69,60 @@ uint32_t Calibration::computeCrc() const {
 }
 
 bool Calibration::isValid() const {
-  return magic == kCalibrationMagic && crc == computeCrc();
+  // The version MUST be compared against the firmware's expected
+  // constant, not merely round-tripped through the CRC. computeCrc()
+  // serializes whatever version is *stored*, so a blob written by a
+  // future firmware with a different field meaning but the same byte
+  // layout is internally self-consistent and would otherwise validate.
+  return magic == kCalibrationMagic && version == kCalibrationVersion &&
+         crc == computeCrc();
 }
 
 int32_t degToUs(const JointCal& cal, float anatomicalDeg) {
+  // Nothing below this line may trust `cal` or `anatomicalDeg`. Both can
+  // arrive corrupt (bad flash, a malformed SetCal command, a NaN that
+  // leaked through an upstream guard), and the return value drives a
+  // physical servo. Fail to NEUTRAL, never to an end stop.
+  const int32_t lo = clampI32(int32_t(cal.usMin), kAbsServoUsMin, kAbsServoUsMax);
+  const int32_t hi = clampI32(int32_t(cal.usMax), kAbsServoUsMin, kAbsServoUsMax);
+  const int32_t absCenter = (kAbsServoUsMin + kAbsServoUsMax) / 2;
+  if (lo >= hi) {
+    return absCenter;  // degenerate/inverted calibration span
+  }
+  const int32_t center = (lo + hi) / 2;
+
+  if (!isFiniteF(anatomicalDeg) || !isFiniteF(cal.trimDeg)) {
+    return center;
+  }
   float d = anatomicalDeg + cal.trimDeg;
   if (cal.invert) {
     d = -d;
   }
-  d = clampf(d, cal.minDeg, cal.maxDeg);
-  float servoDeg = clampf(d + 90.f, 0.f, 180.f);
-  const float t = servoDeg / 180.f;
-  const float us = float(cal.usMin) + t * float(cal.usMax - cal.usMin);
-  return int32_t(us + (us >= 0.f ? 0.5f : -0.5f));
+
+  // The soft limits themselves may be non-finite or inverted.
+  float mn = isFiniteF(cal.minDeg) ? cal.minDeg : -90.f;
+  float mx = isFiniteF(cal.maxDeg) ? cal.maxDeg : 90.f;
+  if (mn > mx) {
+    mn = -90.f;
+    mx = 90.f;
+  }
+
+  d = clampf(d, mn, mx, 0.f);
+  const float servoDeg = clampf(d + 90.f, 0.f, 180.f, 90.f);
+  const float us = float(lo) + (servoDeg / 180.f) * float(hi - lo);
+
+  // us is provably finite and within [lo,hi] by construction, so the
+  // cast below cannot be UB -- but clamp the result anyway. This is the
+  // last line of defense before a pulse width reaches a servo.
+  return clampI32(int32_t(us + 0.5f), lo, hi);
 }
 
 float usToDeg(const JointCal& cal, int32_t us) {
-  const float t = float(us - cal.usMin) / float(cal.usMax - cal.usMin);
+  const int32_t span = int32_t(cal.usMax) - int32_t(cal.usMin);
+  if (span == 0) {
+    return 0.f;  // degenerate span: no meaningful inverse
+  }
+  const float t = float(us - cal.usMin) / float(span);
   const float servoDeg = t * 180.f;
   float d = servoDeg - 90.f;
   if (cal.invert) {

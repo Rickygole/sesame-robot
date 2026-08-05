@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "mathutil.h"
 #include "types.h"
 
 namespace sesame {
@@ -23,7 +24,16 @@ constexpr NameEntry kFaceNames[uint8_t(FaceId::Count)] = {
     {"neutral"}, {"happy"}, {"sad"}, {"angry"}, {"sleep"},
 };
 
-// Parses a float token, rejecting empty/partial/garbage input.
+// Parses a float token, rejecting empty/partial/garbage input AND any
+// non-finite value.
+//
+// strtof is C99-compliant and happily accepts "nan", "NAN", "inf",
+// "-infinity" and even "nan(char-sequence)". A NaN admitted here reaches
+// the gait planner, survives the slew limiter (NaN compares false against
+// every bound, so no clamp fires) and ends up cast to int32_t as a servo
+// pulse width -- undefined behavior on a live machine. Rejecting on the
+// parsed VALUE rather than by matching spellings covers the whole family
+// at once, including spellings we did not think of.
 bool parseFloat(const char* tok, float* out) {
   if (tok == nullptr || *tok == '\0') {
     return false;
@@ -31,6 +41,9 @@ bool parseFloat(const char* tok, float* out) {
   char* end = nullptr;
   const float v = strtof(tok, &end);
   if (end == tok || *end != '\0') {
+    return false;
+  }
+  if (!isFiniteF(v)) {
     return false;
   }
   *out = v;
@@ -244,6 +257,17 @@ bool parseCommand(const char* line, Command* out) {
           (invertVal != 0 && invertVal != 1) ||
           !parseFloat(tokens[6], &p.minDeg) ||
           !parseFloat(tokens[7], &p.maxDeg)) {
+        return false;
+      }
+      // Reject physically impossible calibration at the parse boundary.
+      // degToUs() clamps defensively too, but a bad calibration that is
+      // merely clamped later would silently misreport what the joint is
+      // actually doing -- better to refuse the command outright.
+      if (p.usMin >= p.usMax || int32_t(p.usMin) < kAbsServoUsMin ||
+          int32_t(p.usMax) > kAbsServoUsMax) {
+        return false;
+      }
+      if (p.minDeg > p.maxDeg) {
         return false;
       }
       p.invert = uint8_t(invertVal);
