@@ -1,6 +1,7 @@
 #include "control_server.h"
 
 #include <Arduino.h>
+#include <ArduinoOTA.h>
 #include <ESPmDNS.h>
 #include <WebServer.h>
 #include <WiFi.h>
@@ -153,6 +154,7 @@ void ioTask(void*) {
   g_server.begin();
   for (;;) {
     g_server.handleClient();
+    ArduinoOTA.handle();
     vTaskDelay(pdMS_TO_TICKS(2));
   }
 }
@@ -185,6 +187,26 @@ bool ControlServer::begin(Mailbox* mailbox) {
   if (MDNS.begin(kHostname)) {
     MDNS.addService("http", "tcp", 80);
   }
+
+  // Over-the-air updates. Highest quality-of-life-per-line in the whole
+  // project: servo channels 0 and 1 sit on GPIO 15 and GPIO 2, which are
+  // ESP32 boot strapping pins, so a USB upload may require physically
+  // unplugging two servos every single time. OTA sidesteps that for
+  // every flash after the first.
+  //
+  // Servos are DETACHED before the update starts. A half-written
+  // firmware image with eight servos still holding torque is how you
+  // cook a battery or strip a gear while nobody is watching.
+  ArduinoOTA.setHostname(kHostname);
+  ArduinoOTA.onStart([]() {
+    core::Command cmd;
+    cmd.type = core::CmdType::EStop;
+    if (g_mailbox != nullptr) {
+      g_mailbox->postCommand(cmd);
+    }
+    delay(200);  // let the motion loop act on it before flash writes begin
+  });
+  ArduinoOTA.begin();
 
   xTaskCreatePinnedToCore(ioTask, "io", 8192, nullptr, 1, nullptr, 0);
   return apOk;
