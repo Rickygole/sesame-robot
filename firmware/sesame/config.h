@@ -37,6 +37,29 @@ constexpr uint8_t kOledAddr = 0x3C;
 constexpr uint8_t kOledWidth = 128;
 constexpr uint8_t kOledHeight = 64;
 
+// --- IMU (optional) -------------------------------------------------
+// MPU6050-class accel/gyro, sharing the OLED's I2C bus. 0x68 with AD0
+// low, 0x69 with AD0 high. Absent hardware is detected at boot and the
+// feature simply stays off -- the robot walks fine without it.
+constexpr uint8_t kImuAddr = 0x68;
+
+// --- Ultrasonic rangefinder (optional) ------------------------------
+// HC-SR04 class. TRIG is a normal output.
+//
+// ECHO MUST BE LEVEL-SHIFTED. The HC-SR04 drives its echo line at 5V and
+// the ESP32 is NOT 5V tolerant -- wiring it directly will damage the
+// pin. Use a divider (e.g. 1k series with 2k to ground) or a proper
+// level shifter.
+//
+// GPIO 35 is INPUT-ONLY on the ESP32, which suits an echo line exactly
+// and keeps an output-capable pin free for something else.
+constexpr uint8_t kRangeTrigPin = 27;
+constexpr uint8_t kRangeEchoPin = 35;
+
+// Stop before walking into something. Generous, because the sensor
+// cone is wide and the robot is small.
+constexpr uint16_t kObstacleStopMm = 150;
+
 // --- Battery sense --------------------------------------------------
 // MUST be an ADC1 pin: ADC2 is unusable while WiFi is active, which
 // rules out most of the low GPIOs. Divider scales 2S Li-ion (~8.4V max)

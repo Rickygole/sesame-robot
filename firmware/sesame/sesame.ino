@@ -11,10 +11,17 @@
 // forward/back/turn/arc) with a drive watchdog, a latching e-stop, an
 // OLED face, and a WiFi control surface with an HTTP API.
 //
-// NOT implemented: IMU balance and ultrasonic obstacle avoidance. The
-// envelope carries an ObstacleState seam for the latter, but nothing can
-// currently produce anything except Clear -- see src/core/envelope.h.
-// Obstacle avoidance does NOT work; the interface merely exists.
+// Sensors are OPTIONAL and detected at boot. With an MPU6050 fitted the
+// body levels itself on uneven ground; with an HC-SR04 fitted the robot
+// stops before walking into things. Neither is required -- absent
+// hardware is detected and the feature simply stays off.
+//
+// The IMU does NOT provide balance recovery, and cannot. With 2 DOF per
+// leg there is no foot-position-preserving attitude control to be had,
+// and the crawl gait is already statically stable. Levelling the body on
+// a slope is the honest extent of it.
+//
+// NONE OF THIS HAS RUN ON HARDWARE. No board exists yet.
 //
 // Safety ordering, which is load-bearing: envelope clamps the TARGET,
 // then slew limits the RATE. Two different jobs. Nothing bypasses either.
@@ -29,6 +36,8 @@
 
 #include "config.h"
 #include "src/board/display.h"
+#include "src/board/imu.h"
+#include "src/board/rangefinder.h"
 #include "src/board/servo_bank.h"
 #include "src/board/storage.h"
 #include "src/net/control_server.h"
@@ -70,6 +79,12 @@ uint32_t g_seq = 0;
 Envelope g_envelope;
 
 sesame::Display g_display;
+sesame::Imu g_imu;
+sesame::Rangefinder g_range;
+// Levelling authority. Deliberately well under 1.0 -- a full
+// correction fights the gait and oscillates.
+constexpr float kLevelGain = 0.35f;
+float g_levelBias[kLegCount] = {0.f, 0.f, 0.f, 0.f};
 sesame::Storage g_storage;
 sesame::Mailbox g_mailbox;
 sesame::ControlServer g_server;
@@ -146,6 +161,22 @@ void printStatus() {
   Serial.print(g_throttle, 2);
   Serial.print(F(" attached="));
   Serial.print(g_bank.attached() ? 1 : 0);
+  if (g_imu.present()) {
+    Serial.print(F(" tilt="));
+    Serial.print(g_imu.attitude().rollDeg, 1);
+    Serial.print('/');
+    Serial.print(g_imu.attitude().pitchDeg, 1);
+  }
+  {
+    const uint16_t r = g_range.distanceMm();
+    Serial.print(F(" range="));
+    if (r == sesame::kRangeInvalidMm) {
+      Serial.print(F("none"));  // UNKNOWN, not "clear"
+    } else {
+      Serial.print(r);
+      Serial.print(F("mm"));
+    }
+  }
   Serial.print(F(" pose="));
   const JointPose& p = g_bank.lastWritten();
   for (uint8_t i = 0; i < kJointCount; ++i) {
@@ -391,6 +422,25 @@ void setup() {
   g_mode = Mode::Stand;
   g_display.setFace(sesame::Face::Neutral);
 
+  // Sensors. Both are optional -- absent hardware is detected and the
+  // feature stays off rather than faulting.
+  if (g_imu.begin()) {
+    // Assumes the robot is standing level on a flat surface right now,
+    // which it is: homeSequenced() just put it there. This cancels
+    // mounting misalignment and gyro bias in one step.
+    g_imu.calibrateLevel();
+    Serial.println(F("IMU found -- body levelling active"));
+  } else {
+    Serial.println(F("no IMU -- levelling off (this is fine)"));
+  }
+  if (g_range.begin()) {
+    Serial.print(F("rangefinder on GPIO "));
+    Serial.print(sesame::kRangeTrigPin);
+    Serial.print('/');
+    Serial.print(sesame::kRangeEchoPin);
+    Serial.println(F(" -- ECHO MUST be level-shifted to 3.3V"));
+  }
+
   // Network last: the robot must be mechanically safe before it starts
   // accepting commands from anywhere.
   g_mailbox.begin();
@@ -439,6 +489,46 @@ void loop() {
     Serial.println(F("drive watchdog: no command in 500ms, standing"));
   }
 
+  // --- Sensors ------------------------------------------------------
+  g_imu.update(dt);
+  g_range.tick(dt);
+
+  // Obstacle stop. An INVALID reading means UNKNOWN, not clear -- a
+  // sensor that has stopped answering is not evidence of open space, so
+  // it must not be treated as permission to keep walking. But nor should
+  // a missing sensor stop the robot forever, which is why distanceMm()
+  // returns invalid rather than zero when nothing is fitted.
+  const uint16_t rangeMm = g_range.distanceMm();
+  const bool blocked =
+      (rangeMm != sesame::kRangeInvalidMm) && (rangeMm < sesame::kObstacleStopMm);
+  if (blocked && g_mode == Mode::Drive) {
+    g_desired = standPose();
+    g_mode = Mode::Stand;
+    g_display.setFace(sesame::Face::Confused);
+    Serial.print(F("obstacle at "));
+    Serial.print(rangeMm);
+    Serial.println(F("mm -- stopping"));
+  }
+
+  // Body levelling. Only useful while standing or walking; pointless at
+  // rest and actively wrong while a joint is being trimmed by hand.
+  const bool levelling =
+      g_imu.present() && (g_mode == Mode::Stand || g_mode == Mode::Drive);
+  if (levelling) {
+    const sesame::Attitude& att = g_imu.attitude();
+    if (att.valid && fabsf(att.rollDeg) < sesame::kMaxRecoverableTiltDeg &&
+        fabsf(att.pitchDeg) < sesame::kMaxRecoverableTiltDeg) {
+      sesame::levelingBias(att.rollDeg, att.pitchDeg, sesame::kHalfBodyLenMm,
+                           sesame::kHalfBodyWidMm, kLevelGain, g_levelBias);
+    } else {
+      // Past recoverable tilt the robot is falling or has been picked
+      // up. Flailing a correction that cannot succeed makes it worse.
+      for (uint8_t i = 0; i < kLegCount; ++i) g_levelBias[i] = 0.f;
+    }
+  } else {
+    for (uint8_t i = 0; i < kLegCount; ++i) g_levelBias[i] = 0.f;
+  }
+
   if (g_mode == Mode::Drive) {
     LegAngles ang[kLegCount];
     GaitReport rep;
@@ -446,6 +536,19 @@ void loop() {
     for (uint8_t i = 0; i < kLegCount; ++i) {
       g_desired.deg[logicalIndex(Leg(i), Joint::Hip)] = ang[i].hipDeg;
       g_desired.deg[logicalIndex(Leg(i), Joint::Knee)] = ang[i].kneeDeg;
+    }
+  }
+
+  // Apply the levelling correction as a knee delta. A stance-depth
+  // change of dz needs dphi = dz / (leg * cos(phi)); at the nominal
+  // stance that denominator is just the stance radius minus the coxa.
+  if (levelling) {
+    const float lever = g_geo[0].legMm * cosf(0.5236f);  // ~30deg nominal
+    if (lever > 1.f) {
+      for (uint8_t i = 0; i < kLegCount; ++i) {
+        const float dDeg = (g_levelBias[i] / lever) * 57.29578f;
+        g_desired.deg[logicalIndex(Leg(i), Joint::Knee)] += dDeg;
+      }
     }
   }
 
