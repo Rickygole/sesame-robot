@@ -20,9 +20,16 @@ constexpr NameEntry kCommandNames[uint8_t(CmdType::Count)] = {
     {"setjoint"}, {"setcal"}, {"savecal"}, {"detach"}, {"estop"},
 };
 
+// Order MUST match enum class FaceId exactly -- static_assert below
+// catches a count mismatch, but not a transposition, so keep them
+// visually aligned.
 constexpr NameEntry kFaceNames[uint8_t(FaceId::Count)] = {
-    {"neutral"}, {"happy"}, {"sad"}, {"angry"}, {"sleep"},
+    {"neutral"},   {"happy"},    {"sad"},      {"angry"}, {"sleep"},
+    {"listening"}, {"thinking"}, {"confused"}, {"talking"},
 };
+static_assert(sizeof(kFaceNames) / sizeof(kFaceNames[0]) ==
+                  uint8_t(FaceId::Count),
+              "kFaceNames is out of sync with FaceId -- add the new name.");
 
 // Parses a float token, rejecting empty/partial/garbage input AND any
 // non-finite value.

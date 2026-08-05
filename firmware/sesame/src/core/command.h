@@ -26,13 +26,30 @@ enum class CmdType : uint8_t {
 
 // Placeholder face-expression IDs. The real face_state module is a
 // later stage; this is just the id space SetFace commands address.
+// Face expressions. This is a WIRE enum -- the companion app sends these
+// by name over the control link, and the numeric values are what a future
+// binary protocol or logged event would carry.
+//
+// APPEND ONLY. Never renumber an existing member: a stale companion, a
+// saved animation, or a recorded log would silently mean a different
+// face. New expressions go at the end, before Count.
+//
+// The last four exist for conversation rather than motion. A voice
+// assistant needs to show that it heard you (Listening), that it is
+// working (Thinking), that it failed to understand (Confused), and that
+// it is replying (Talking). Without those the robot looks frozen during
+// exactly the moments a person is waiting on it.
 enum class FaceId : uint8_t {
   Neutral = 0,
   Happy = 1,
   Sad = 2,
   Angry = 3,
   Sleep = 4,
-  Count = 5,
+  Listening = 5,
+  Thinking = 6,
+  Confused = 7,
+  Talking = 8,
+  Count = 9,
 };
 
 struct DrivePayload {
