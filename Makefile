@@ -29,7 +29,7 @@ PORT     ?=
 # Pure-python, stdlib only. No venv, no pip, no robot required.
 COMPANION := tools/companion
 
-.PHONY: all test sim clean verify flash monitor ports voice voice-test
+.PHONY: all test sim clean verify flash monitor ports voice voice-test app voice-listen
 
 all: test
 
@@ -70,6 +70,23 @@ voice:
 # there is nothing to install.
 voice-test:
 	python3 -m unittest discover -s $(COMPANION)/tests -q
+
+# Build build/Sesame Voice.app -- the real macOS app bundle voice input
+# needs (Info.plist + a code-signed, bundle-relocated Python). Fetches a
+# python 3.12 via uv and installs pyobjc into tools/companion/.venv on
+# first run; idempotent and safe to rerun after any edit. See
+# tools/companion/README.md for why voice input needs a bundle at all.
+app:
+	$(COMPANION)/app/build_app.sh
+
+# Voice input: wake word ("hey sesame") -> spoken command -> the same
+# pipeline as `make voice` -> spoken reply. MUST go through `open`, not
+# a direct python invocation -- see tools/companion/README.md and the
+# guard at the top of run_voice.py, which explains why and fails
+# cleanly instead of crashing if that's not how you got here.
+voice-listen: app
+	open -W "$(COMPANION)/build/Sesame Voice.app" \
+		--args "$(abspath $(COMPANION))/sesame_voice/run_voice.py"
 
 # Compile the sketch for ESP32. Needs no board attached -- this is the
 # check to run after every edit.

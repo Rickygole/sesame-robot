@@ -1,0 +1,11 @@
+# Only needed for voice input (make app / make voice-listen). The typed
+# console (make voice) and the tests (make voice-test) are stdlib-only
+# and need nothing from this file.
+#
+# Installed into tools/companion/.venv (python 3.12 via `uv venv
+# --python 3.12`) by app/build_app.sh, never into system Python.
+# Pinned to what was verified working on macOS Apple Silicon.
+pyobjc-core==12.2.1
+pyobjc-framework-Cocoa==12.2.1
+pyobjc-framework-Speech==12.2.1
+pyobjc-framework-AVFoundation==12.2.1

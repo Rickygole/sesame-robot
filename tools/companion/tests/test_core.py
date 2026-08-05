@@ -264,7 +264,7 @@ class TestPurityContract(unittest.TestCase):
 
     ALLOWED = {
         "enum", "typing", "re", "math", "dataclasses", "collections",
-        "itertools", "functools", "abc", "__future__",
+        "itertools", "functools", "abc", "__future__", "difflib",
     }
 
     def test_core_imports_only_stdlib(self):

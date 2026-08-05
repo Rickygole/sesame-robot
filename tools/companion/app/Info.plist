@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template. build_app.sh substitutes the @@PLACEHOLDER@@ tokens below with
+  paths specific to this machine's uv-managed Python and writes the result
+  into build/Sesame Voice.app/Contents/Info.plist. Nothing here should be
+  hand-edited per-machine -- edit this template and rerun `make app`.
+
+  NSSpeechRecognitionUsageDescription and NSMicrophoneUsageDescription are
+  the two keys that matter for TCC: without them, SFSpeechRecognizer and
+  AVAudioEngine's mic tap crash the process with SIGABRT the instant a
+  privacy-sensitive call is made, with no Python traceback. See
+  tools/companion/README.md for the full story.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.sesame.voice</string>
+
+	<key>CFBundleName</key>
+	<string>Sesame Voice</string>
+
+	<key>CFBundleDisplayName</key>
+	<string>Sesame Voice</string>
+
+	<key>CFBundleExecutable</key>
+	<string>SesameVoice</string>
+
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+
+	<key>CFBundleVersion</key>
+	<string>1</string>
+
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+
+	<key>LSUIElement</key>
+	<true/>
+
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Sesame listens for the wake word ("hey sesame") and the command that follows it, so it can walk, turn, and change expression on request.</string>
+
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Sesame needs the microphone to hear the wake word and your spoken commands. Audio is recognized on-device and never leaves this machine.</string>
+
+	<!--
+	  LaunchServices-injected environment. This is what makes the copied
+	  interpreter binary able to find its own standard library and the
+	  venv's site-packages (pyobjc) once it no longer lives at its
+	  original install path -- see build_app.sh for why a plain copy
+	  otherwise fails with "Could not find platform independent
+	  libraries <prefix>" before a single line of our code runs.
+	-->
+	<key>LSEnvironment</key>
+	<dict>
+		<key>PYTHONHOME</key>
+		<string>@@PYTHON_HOME@@</string>
+		<key>PYTHONPATH</key>
+		<string>@@PYTHON_SITE_PACKAGES@@</string>
+	</dict>
+</dict>
+</plist>
