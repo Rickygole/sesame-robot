@@ -30,6 +30,10 @@ Sesame is an open-source ESP32 mini walking robot by [Dorian Todd](https://www.d
 
 > GPIO 2 and 15 are ESP32 boot strapping pins. If an upload fails, unplug motors 0 and 1 and retry.
 
+> **Got the board?** Read **[docs/BRINGUP.md](docs/BRINGUP.md)** before you
+> plug in servos. This firmware has never run on hardware; that document is
+> the order that finds the problems cheaply instead of expensively.
+
 ## Quick start
 
 ```bash
