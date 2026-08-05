@@ -57,10 +57,9 @@ static void testParseSimpleNoArgCommands() {
 
 static void testParseDrive() {
   Command cmd;
-  CHECK(parseCommand("drive 1.5 -2.25 0.3 60 20", &cmd));
+  CHECK(parseCommand("drive 1.5 0.3 60 20", &cmd));
   CHECK(cmd.type == CmdType::Drive);
   CHECK_NEAR(cmd.payload.drive.vx, 1.5, 1e-5);
-  CHECK_NEAR(cmd.payload.drive.vy, -2.25, 1e-5);
   CHECK_NEAR(cmd.payload.drive.omega, 0.3, 1e-5);
   CHECK_NEAR(cmd.payload.drive.bodyHeightMm, 60.0, 1e-5);
   CHECK_NEAR(cmd.payload.drive.stepHeightMm, 20.0, 1e-5);
@@ -106,10 +105,10 @@ static void testRejectsMalformed() {
   CHECK(!parseCommand("", &cmd));
   CHECK(!parseCommand("   ", &cmd));
   CHECK(!parseCommand("bogus", &cmd));
-  CHECK(!parseCommand("drive 1 2 3", &cmd));           // too few args
-  CHECK(!parseCommand("drive 1 2 3 4 5 6", &cmd));      // too many args
-  CHECK(!parseCommand("drive a b c d e", &cmd));        // garbage numbers
-  CHECK(!parseCommand("drive 1.5x 2 3 4 5", &cmd));     // trailing garbage in a number
+  CHECK(!parseCommand("drive 1 2", &cmd));              // too few args
+  CHECK(!parseCommand("drive 1 2 3 4 5", &cmd));        // too many args (also: no vy slot)
+  CHECK(!parseCommand("drive a b c d", &cmd));          // garbage numbers
+  CHECK(!parseCommand("drive 1.5x 2 3 4", &cmd));       // trailing garbage in a number
   CHECK(!parseCommand("setjoint 99 1.0", &cmd));        // out-of-range joint index
   CHECK(!parseCommand("setjoint -1 1.0", &cmd));        // negative -> out of range for uint8
   CHECK(!parseCommand("setface bogusface", &cmd));      // unknown face

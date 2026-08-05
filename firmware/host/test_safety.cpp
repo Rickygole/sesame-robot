@@ -45,16 +45,15 @@ void testClampfNaN() {
 void testParserRejectsNonFinite() {
   Command cmd;
   // The exact string proven to reach degToUs as NaN.
-  CHECK(!parseCommand("drive nan 0 0 60 20", &cmd));
+  CHECK(!parseCommand("drive nan 0 60 20", &cmd));
   // strtof accepts a whole family of spellings -- reject on VALUE, so
   // all of these must fail regardless of how they are written.
   const char* poison[] = {
-      "drive NAN 0 0 60 20",       "drive nan(x) 0 0 60 20",
-      "drive inf 0 0 60 20",       "drive +inf 0 0 60 20",
-      "drive -inf 0 0 60 20",      "drive INFINITY 0 0 60 20",
-      "drive infinity 0 0 60 20",  "drive 0 nan 0 60 20",
-      "drive 0 0 nan 60 20",       "drive 0 0 0 nan 20",
-      "drive 0 0 0 60 nan",
+      "drive NAN 0 60 20",       "drive nan(x) 0 60 20",
+      "drive inf 0 60 20",       "drive +inf 0 60 20",
+      "drive -inf 0 60 20",      "drive INFINITY 0 60 20",
+      "drive infinity 0 60 20",  "drive 0 nan 60 20",
+      "drive 0 0 nan 20",        "drive 0 0 60 nan",
   };
   for (unsigned i = 0; i < sizeof(poison) / sizeof(poison[0]); ++i) {
     if (parseCommand(poison[i], &cmd)) {
@@ -63,9 +62,9 @@ void testParserRejectsNonFinite() {
     }
   }
   // Legitimate commands must still parse.
-  CHECK(parseCommand("drive 40 0 0 60 20", &cmd));
-  CHECK(parseCommand("drive -40 0 30 60 20", &cmd));
-  CHECK(parseCommand("drive 1e2 0 0 60 20", &cmd));
+  CHECK(parseCommand("drive 40 0 60 20", &cmd));
+  CHECK(parseCommand("drive -40 30 60 20", &cmd));
+  CHECK(parseCommand("drive 1e2 0 60 20", &cmd));
 }
 
 void testSetCalRejectsInsaneEnvelope() {
@@ -248,8 +247,8 @@ void testNoCommandCanEscapeEnvelope() {
   // The original kill chain, end to end: a malformed command string must
   // not be able to produce an out-of-envelope pulse width by any route.
   const char* lines[] = {
-      "drive nan 0 0 60 20",   "drive inf 0 0 60 20",
-      "drive 1e30 0 0 60 20",  "drive -1e30 0 0 60 20",
+      "drive nan 0 60 20",   "drive inf 0 60 20",
+      "drive 1e30 0 60 20",  "drive -1e30 0 60 20",
       "setcal 0 0 32000 0 0 -60 90",
   };
   JointCal cal;

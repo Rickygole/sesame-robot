@@ -41,6 +41,7 @@ namespace core {
 constexpr float kPlaceholderCoxaMm = 25.0f;
 constexpr float kPlaceholderLegMm = 55.0f;
 constexpr float kPlaceholderKneeBendDeg = 0.0f;
+constexpr float kPlaceholderNeutralYawDeg = 0.0f;
 
 struct LegGeometry {
   float coxaMm;       // L_coxa: hip yaw axis to knee yaw axis, along u(theta)
@@ -48,6 +49,10 @@ struct LegGeometry {
   float kneeBendDeg;  // fixed internal link bend, see file comment above
   Vec3 hipInBody;      // hip yaw axis origin, expressed in body frame
   float lateralSign;   // +1 or -1; see frame-convention comment above
+  float neutralYawDeg; // hip yaw (theta, anatomical hipDeg) this leg sits
+                        // at when commanded velocity is zero. TODO(hardware)
+                        // PLACEHOLDER like the link lengths above -- verify
+                        // against CAD before trusting it for real motion.
 };
 
 struct LegAngles {

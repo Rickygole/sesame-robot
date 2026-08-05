@@ -187,14 +187,18 @@ bool parseCommand(const char* line, Command* out) {
       break;
 
     case CmdType::Drive: {
-      if (tokenCount != 6) {
+      // Exactly 5 tokens: "drive" + 4 args. A stale 5-argument line
+      // (the old vx/vy/omega/bodyHeight/stepHeight grammar) has 6 tokens
+      // and is rejected here on argument count, not silently reinterpreted
+      // with one field aliased to vy -- see DrivePayload's comment.
+      if (tokenCount != 5) {
         return false;
       }
       DrivePayload p;
-      if (!parseFloat(tokens[1], &p.vx) || !parseFloat(tokens[2], &p.vy) ||
-          !parseFloat(tokens[3], &p.omega) ||
-          !parseFloat(tokens[4], &p.bodyHeightMm) ||
-          !parseFloat(tokens[5], &p.stepHeightMm)) {
+      if (!parseFloat(tokens[1], &p.vx) ||
+          !parseFloat(tokens[2], &p.omega) ||
+          !parseFloat(tokens[3], &p.bodyHeightMm) ||
+          !parseFloat(tokens[4], &p.stepHeightMm)) {
         return false;
       }
       cmd.payload.drive = p;

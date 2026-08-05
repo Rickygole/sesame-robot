@@ -37,10 +37,16 @@ enum class FaceId : uint8_t {
 
 struct DrivePayload {
   float vx;
-  float vy;
   float omega;
   float bodyHeightMm;
   float stepHeightMm;
+  // NOTE: no vy/strafe. A 2-DOF leg has no achievable lateral foot
+  // velocity at neutral stance; off-neutral it flips sign across the
+  // stride, which is a wobble rather than a strafe. Cut, not degraded --
+  // see core/gait.h's GaitCommand comment. There is deliberately no
+  // token position left in the `drive` grammar below for it either, so
+  // a stale 5-argument line fails outright (wrong argument count) rather
+  // than silently reinterpreting one of these fields as vy.
 };
 
 struct PlayClipPayload {
@@ -95,7 +101,7 @@ bool faceIdFromName(const char* name, FaceId* out);
 //   stop
 //   stand
 //   rest
-//   drive <vx> <vy> <omega> <bodyHeightMm> <stepHeightMm>
+//   drive <vx> <omega> <bodyHeightMm> <stepHeightMm>   (no vy -- see DrivePayload)
 //   playclip <clipId>
 //   setface <faceName>
 //   setjoint <jointIndex> <deg>

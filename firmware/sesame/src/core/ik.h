@@ -39,11 +39,28 @@ struct IkResult {
 
 // Closed-form IK. footInHipFrame is in the leg's local hip frame (see
 // geometry.h). See file comment above for the reachability caveat.
+//
+// STATUS: this is a TEST ORACLE (used by test_ik.cpp's round-trip check
+// and by a future manual foot-placement CLI command), not part of the
+// runtime gait path. GaitScheduler::step() never asks "what angles put
+// the foot at this (x,y,z)" -- it asks "what angles put the foot at this
+// yaw, at this elevation angle" (anglesFromYawPitch, below), which is
+// exactly reachable by construction and needs no projection or residual.
 IkResult solveFootPosition(const LegGeometry& geo, Vec3 footInHipFrame);
 
-// Directly picks a point ON the torus for a given yaw and "how far below
-// horizontal" depth (mm, along -z at the resulting radial distance).
-// Always exact: residual is 0 by construction, no reachability question.
+// Converts an already-chosen (yaw, elevation) pair directly to anatomical
+// servo angles. Pure unit conversion + the fixed link-bend offset -- NO
+// trigonometry, because yawDeg and pitchRad (phi, radians below
+// horizontal) are already exactly the two angles the leg's two servos
+// command. There is no reachability question: every (yawDeg, pitchRad)
+// pair names a point ON the torus, so residual is zero by construction.
+// This is the one primitive the gait planner is built on.
+LegAngles anglesFromYawPitch(const LegGeometry& geo, float yawDeg, float pitchRad);
+
+// mm-facing wrapper over anglesFromYawPitch: picks a point ON the torus
+// for a given yaw and "how far below horizontal" depth (mm, along -z at
+// the resulting radial distance). Always exact: residual is 0 by
+// construction, no reachability question.
 LegAngles solveSwingDepth(const LegGeometry& geo, float yawDeg, float depthMm);
 
 }  // namespace core

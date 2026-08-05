@@ -2,6 +2,12 @@
 // simulated seconds at 50 Hz, no hardware. Dumps a CSV to stdout (one
 // row per leg per tick) so gait quality can be inspected without a
 // robot. Run via `make sim` (writes build/gait.csv).
+//
+// The residualMm column is the one to watch. Under the (theta, phi)
+// planner it should be ~0 for every row: the planner works directly in
+// the two coordinates the mechanism has, so a foot target is never
+// off the reachable surface. The previous Cartesian planner produced
+// -27.0 to -4.49 mm here, on a 55 mm leg, for all 2000 rows.
 #include <cmath>
 #include <cstdio>
 
@@ -19,133 +25,95 @@ namespace {
 
 const char* legName(Leg leg) {
   switch (leg) {
-    case Leg::FR:
-      return "FR";
-    case Leg::RR:
-      return "RR";
-    case Leg::FL:
-      return "FL";
-    case Leg::RL:
-      return "RL";
-    default:
-      return "??";
+    case Leg::FR: return "FR";
+    case Leg::RR: return "RR";
+    case Leg::FL: return "FL";
+    case Leg::RL: return "RL";
+    default: return "??";
   }
 }
 
-// TODO(hardware): PLACEHOLDER hip mounting layout. No physical robot
-// exists yet to measure it. The hips are modeled as mounted slightly
-// inboard of the gait module's nominal (wider) foot stance width --
-// plausible for a splayed-leg quadruped chassis -- purely so this demo
-// simulation lands somewhere near the leg's reachable torus. This must
-// be replaced with real CAD/hardware numbers before it means anything.
-constexpr float kPlaceholderHipHalfLengthMm = 40.f;
-constexpr float kPlaceholderHipHalfWidthMm = 10.f;
-
-Vec3 hipMountInBody(Leg leg) {
-  const float hx = kPlaceholderHipHalfLengthMm;
-  const float hy = kPlaceholderHipHalfWidthMm;
-  switch (leg) {
-    case Leg::FR:
-      return Vec3(hx, -hy, 0.f);
-    case Leg::RR:
-      return Vec3(-hx, -hy, 0.f);
-    case Leg::FL:
-      return Vec3(hx, hy, 0.f);
-    case Leg::RL:
-      return Vec3(-hx, hy, 0.f);
-    default:
-      return Vec3(0.f, 0.f, 0.f);
+// Placeholder body layout. Link lengths come from geometry.h's
+// kPlaceholder* constants and are NOT measured -- see the TODO there.
+void buildLegs(LegGeometry out[kLegCount]) {
+  const float halfLen = 40.f;
+  const float halfWid = 30.f;
+  for (uint8_t i = 0; i < kLegCount; ++i) {
+    const Leg leg = Leg(i);
+    const bool front = (leg == Leg::FR || leg == Leg::FL);
+    const bool right = (leg == Leg::FR || leg == Leg::RR);
+    out[i].coxaMm = kPlaceholderCoxaMm;
+    out[i].legMm = kPlaceholderLegMm;
+    out[i].kneeBendDeg = kPlaceholderKneeBendDeg;
+    out[i].hipInBody =
+        Vec3(front ? halfLen : -halfLen, right ? halfWid : -halfWid, 0.f);
+    out[i].lateralSign = right ? 1.f : -1.f;
+    out[i].neutralYawDeg = kPlaceholderNeutralYawDeg;
   }
-}
-
-// See geometry.h TODOs: link lengths are placeholders, no physical
-// robot exists yet to measure them.
-LegGeometry legGeometryFor(Leg leg) {
-  LegGeometry g;
-  g.coxaMm = kPlaceholderCoxaMm;
-  g.legMm = kPlaceholderLegMm;
-  g.kneeBendDeg = kPlaceholderKneeBendDeg;
-  g.hipInBody = hipMountInBody(leg);
-  // Right-side legs (FR,RR) sit at body -y; left-side (FL,RL) at +y.
-  // lateralSign maps body Y into the hip frame's outward-positive Y.
-  g.lateralSign = (leg == Leg::FR || leg == Leg::RR) ? -1.f : 1.f;
-  return g;
 }
 
 }  // namespace
 
 int main() {
+  LegGeometry geo[kLegCount];
+  buildLegs(geo);
+
   GaitScheduler sched;
+  sched.setGeometry(geo);
   sched.setGait(kCrawl);
 
   GaitCommand cmd;
-  cmd.vx = 60.f;          // mm/s forward
-  cmd.vy = 0.f;
-  cmd.omega = 0.f;
-  cmd.bodyHeightMm = 48.f;
-  cmd.stepHeightMm = 20.f;
+  cmd.vxMmPerSec = 40.f;
+  cmd.omegaDegPerSec = 0.f;
+  cmd.bodyHeightMm = 0.5f * kPlaceholderLegMm;
+  cmd.stepHeightMm = 0.15f * kPlaceholderLegMm;
+  cmd.maxStrideMm = 0.f;
   sched.setCommand(cmd);
 
-  LegGeometry geo[kLegCount];
-  for (uint8_t i = 0; i < kLegCount; ++i) {
-    geo[i] = legGeometryFor(Leg(i));
-  }
+  MotionLimits limits;
+  JointPose cur;
+  for (uint8_t i = 0; i < kJointCount; ++i) cur.deg[i] = 0.f;
 
-  MotionLimits limits;  // defaults
+  printf(
+      "t,phase,leg,hipDeg,kneeDeg,footHipX,footHipY,footHipZ,residualMm,"
+      "reachable,inStance,throttle,bodyHeightMm,stepHeightMm,strideMm,"
+      "stanceRadiusMm,maxScrubMmPerSec,maxLatDevMm,clamped\n");
 
-  JointPose current;  // zero pose
+  const float dt = 0.02f;  // the real 50 Hz tick
+  const int kTicks = 500;  // 10 simulated seconds
+  LegAngles ang[kLegCount];
+  GaitReport rep;
   float throttle = 1.f;
 
-  const float dt = 1.f / 50.f;
-  const int totalSteps = 10 * 50;  // 10 simulated seconds
+  for (int t = 0; t < kTicks; ++t) {
+    sched.step(dt, throttle, ang, rep);
 
-  std::printf(
-      "t,phase,leg,hipDeg,kneeDeg,footBodyX,footBodyY,footBodyZ,footHipX,"
-      "footHipY,footHipZ,residualMm,reachable,throttle,totalDegPerSec\n");
-
-  for (int step = 0; step < totalSteps; ++step) {
-    const float t = float(step) * dt;
-
-    Vec3 feetBody[kLegCount];
-    sched.step(dt, throttle, feetBody);
-
-    JointPose desired;
-    IkResult ikResults[kLegCount];
-    Vec3 feetHip[kLegCount];
+    JointPose want = cur;
     for (uint8_t i = 0; i < kLegCount; ++i) {
-      const Leg leg = Leg(i);
-      feetHip[i] = footBodyToHipFrame(geo[i], feetBody[i]);
-      const IkResult ik = solveFootPosition(geo[i], feetHip[i]);
-      ikResults[i] = ik;
-      desired.deg[logicalIndex(leg, Joint::Hip)] = ik.angles.hipDeg;
-      desired.deg[logicalIndex(leg, Joint::Knee)] = ik.angles.kneeDeg;
+      want.deg[logicalIndex(Leg(i), Joint::Hip)] = ang[i].hipDeg;
+      want.deg[logicalIndex(Leg(i), Joint::Knee)] = ang[i].kneeDeg;
     }
-
-    const SlewResult slewed = applySlew(current, desired, limits, dt);
-
-    float totalDegPerSec = 0.f;
-    for (uint8_t i = 0; i < kJointCount; ++i) {
-      totalDegPerSec += std::fabs(slewed.applied.deg[i] - current.deg[i]);
-    }
-    totalDegPerSec /= dt;
-
-    current = slewed.applied;
-    throttle = slewed.throttle;
+    const SlewResult sr = applySlew(cur, want, limits, dt);
+    cur = sr.applied;
+    // Feed throttle back into the gait clock, so the gait stays coherent
+    // under power limiting instead of the pose distorting.
+    throttle = sr.throttle;
 
     for (uint8_t i = 0; i < kLegCount; ++i) {
-      const Leg leg = Leg(i);
-      const IkResult& ik = ikResults[i];
-      std::printf(
-          "%.4f,%.4f,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%d,%."
-          "4f,%.3f\n",
-          t, sched.phase(), legName(leg),
-          current.deg[logicalIndex(leg, Joint::Hip)],
-          current.deg[logicalIndex(leg, Joint::Knee)], feetBody[i].x,
-          feetBody[i].y, feetBody[i].z, feetHip[i].x, feetHip[i].y,
-          feetHip[i].z, ik.residualMm, ik.reachable ? 1 : 0, throttle,
-          totalDegPerSec);
+      const Vec3 p = forwardKinematics(geo[i], ang[i]);
+      const IkResult ik = solveFootPosition(geo[i], p);
+      printf(
+          "%.4f,%.4f,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%d,%d,%.4f,%.3f,%.3f,"
+          "%.3f,%.3f,%.3f,%.3f,%d\n",
+          double(float(t) * dt), double(sched.phase()), legName(Leg(i)),
+          double(ang[i].hipDeg), double(ang[i].kneeDeg), double(p.x),
+          double(p.y), double(p.z), double(ik.residualMm),
+          ik.reachable ? 1 : 0, sched.legInStance(Leg(i)) ? 1 : 0,
+          double(sr.throttle), double(rep.bodyHeightMm),
+          double(rep.stepHeightMm), double(rep.strideMm),
+          double(rep.stanceRadiusMm), double(rep.maxScrubMmPerSec),
+          double(rep.maxLateralDeviationMm), rep.clamped ? 1 : 0);
     }
   }
-
   return 0;
 }
