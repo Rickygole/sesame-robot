@@ -65,33 +65,70 @@ contract is written down in
 [`src/core/README.md`](firmware/sesame/src/core/README.md) and enforced by
 `-Werror` on the host build.
 
+## The voice assistant
+
+```bash
+make voice          # type commands, simulated robot -- works right now
+make voice-listen   # say "hey sesame, walk forward" (macOS app bundle)
+make voice --robot  # drive a real robot over WiFi
+```
+
+Speech recognition runs **on-device** via Apple's Speech framework: free,
+offline, no API key, and your voice never leaves the machine. The brain is
+a rule-based intent parser — deterministic, sub-millisecond, and its
+failure mode is "I didn't understand", not confidently doing the wrong
+thing to a physical machine.
+
+It understands walking, turning, postures, faces, and context-dependent
+follow-ups ("faster", "again", "the other way"). **It does not hold a
+conversation** — that needs a language model, which is a one-line swap by
+design but is not wired up.
+
 ## Status
 
-Verified: compiles for ESP32 (arduino-esp32 2.0.17), 22% flash / 6% RAM.
-Host tests pass. **Nothing has run on hardware yet** — no board exists, so
-servo directions, timing, and the boot self-test are all unverified.
+Verified: ESP32 compile clean (arduino-esp32 2.0.17), **66% flash / 15%
+RAM**. All host and companion tests pass.
 
-- [x] Motion core: IK, gait scheduler, slew limiting, calibration, command parsing
+**Nothing has run on hardware.** No board exists yet, so servo directions,
+tick timing, the OLED flush, and the boot self-test are all reasoned but
+unmeasured. Expect a real calibration session when the robot arrives.
+
+- [x] Motion core: IK, gait scheduler, slew limiting, calibration, commands
 - [x] Host test harness + offline gait simulator
-- [x] Servo bank, serial CLI, boot self-test — `stand`, `rest`, `setjoint`, `estop`
-- [ ] Gait: `drive` is withheld pending a parameterization fix (see below)
-- [ ] OLED faces, WiFi control surface, NVS-persisted calibration
-- [ ] Closed-loop sensing (IMU balance, ultrasonic)
-- [ ] Voice / LLM-driven behavior
+- [x] Servo bank, serial CLI, boot self-test, latching e-stop
+- [x] Walking — crawl gait, forward/back/turn/arc, with a drive watchdog
+- [x] Safety envelope with derived (not hardcoded) motion caps
+- [x] OLED face — nine expressions, chunked non-blocking flush
+- [x] WiFi control surface, HTTP API, built-in web UI, OTA
+- [x] NVS-persisted calibration
+- [x] Voice assistant: wake word, on-device speech, intent parsing, TTS
+- [ ] IMU balance and ultrasonic obstacle avoidance — **seam only, not implemented**
+- [ ] Conversational LLM brain — swappable interface exists, not wired
 
-### Known limitation: 2 DOF per leg
+## Known limitation: 2 DOF per leg
 
 Each leg has two servos, so a foot's reachable set is a **torus** — a 2D
-surface in 3D space. You get to control two of {fore-aft, lateral, height};
-the third follows. In particular a foot cannot stay planted while the body
-translates over it, so some scuffing or body bob is unavoidable. That is a
-property of the mechanism, not something firmware can fix.
+surface in 3D space. You control two of {fore-aft, lateral, height}; the
+third follows. That is a property of the mechanism, not something firmware
+can fix.
 
-The gait planner currently emits full 3D foot targets, which are therefore
-not exactly reachable. `drive` reports unimplemented rather than running it
-— a `stepHeightMm` knob that silently does something else is worse than no
-knob. Being fixed by replanning in the two coordinates the mechanism
-actually has.
+Two consequences, both real:
+
+**There is no strafe.** At neutral stance a leg's achievable foot motion is
+purely tangential to its hip circle, so lateral authority is exactly zero.
+It is refused with an explanation, never silently turned into forward
+motion.
+
+**A foot cannot stay planted while the body translates over it.** The gait
+plans directly in (yaw, elevation) so every foot target is exactly
+reachable, but the stance path is a shallow arc rather than a straight
+line — about 3 mm of lateral bow over a stride, reported as
+`maxLateralDeviationMm`.
+
+What you do get: step length, step height, body height, gait frequency and
+duty factor as **runtime knobs that mean what they say**, and
+forward/backward/turn/arc from one formula instead of four hand-written
+poses.
 
 ## Credits
 
