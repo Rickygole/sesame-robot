@@ -1,6 +1,4 @@
-# Built by app/build_app.sh -- machine-specific absolute paths are baked
-# into Info.plist's LSEnvironment, so this is never something to commit.
 build/
-
-# Created by `make app` via `uv venv --python 3.12`. Recreated on demand.
 .venv/
+*.log
+__pycache__/

@@ -25,7 +25,26 @@ import time
 
 import AVFoundation
 import Speech
-from Foundation import NSLocale
+from Foundation import NSDate, NSLocale, NSRunLoop
+
+
+def _pump(seconds):
+    """Run the Cocoa run loop for `seconds`, then return.
+
+    THIS IS LOAD-BEARING, not a nicety. Both the authorization callback
+    and every SFSpeechRecognitionTask result are delivered as callbacks
+    on the main run loop. If the main thread sits in a plain blocking
+    wait -- queue.get(), Event.wait(), sleep() -- those callbacks can
+    never be delivered, so:
+
+      * the permission dialog never appears,
+      * no transcript ever arrives,
+      * and macOS eventually reports the app as "not responding",
+        because from its point of view a process that never pumps its
+        event loop is hung. Which it is.
+    """
+    NSRunLoop.currentRunLoop().runUntilDate_(
+        NSDate.dateWithTimeIntervalSinceNow_(seconds))
 
 ON_DEVICE_LOCALE = "en-US"
 
@@ -120,6 +139,54 @@ class MicSpeech(object):
         self._input_node.installTapOnBus_bufferSize_format_block_(
             _TAP_BUS, _TAP_BUFFER_SIZE, self._tap_format, on_buffer)
 
+    def request_authorization(self, timeout_s=30.0):
+        """Ask for Speech Recognition access and WAIT for the answer.
+
+        This is not optional and it is not implicit. Without an explicit
+        requestAuthorization_ call macOS never shows the consent dialog,
+        the status stays notDetermined forever, and recognition silently
+        yields nothing at all -- the app looks like it is listening and
+        simply never hears a word. That failure mode cost real debugging
+        time, hence the loud return value and the caller that acts on it.
+
+        Returns (authorized: bool, status_name: str).
+        """
+        names = {0: "notDetermined", 1: "denied", 2: "restricted",
+                 3: "authorized"}
+        done = threading.Event()
+        result = {"status": None}
+
+        def handler(status):
+            result["status"] = int(status)
+            done.set()
+
+        Speech.SFSpeechRecognizer.requestAuthorization_(handler)
+        # PUMP the run loop rather than blocking on `done`. The handler
+        # above is delivered as a run-loop callback, so a blocking wait
+        # here deadlocks: the thing we are waiting for can only happen on
+        # the thread we just parked. Bounded, so a user who walks away
+        # from the dialog does not wedge the process forever.
+        deadline = time.monotonic() + timeout_s
+        while not done.is_set() and time.monotonic() < deadline:
+            _pump(0.1)
+
+        status = result["status"]
+        if status is None:
+            status = int(Speech.SFSpeechRecognizer.authorizationStatus())
+        return status == 3, names.get(status, str(status))
+
+    def microphone_authorized(self):
+        """Mic access is a SEPARATE grant from speech recognition.
+
+        Having one and not the other produces two different silent
+        failures, so they are reported separately.
+        """
+        names = {0: "notDetermined", 1: "restricted", 2: "denied",
+                 3: "authorized"}
+        status = int(
+            AVFoundation.AVCaptureDevice.authorizationStatusForMediaType_("soun"))
+        return status == 3, names.get(status, str(status))
+
     def start(self):
         ok, error = self._engine.startAndReturnError_(None)
         if not ok:
@@ -177,8 +244,15 @@ class MicSpeech(object):
         while not self._closed:
             if time.monotonic() - self._session_started_at > self._session_max_s:
                 self._new_session()
+            # Pump the run loop instead of blocking on the queue. The
+            # recognition callback that FILLS this queue is itself a
+            # run-loop callback, so queue.get(timeout=...) would park the
+            # only thread that can deliver the thing being waited for --
+            # the queue would stay empty forever and nothing would ever
+            # be heard.
+            _pump(poll_s)
             try:
-                yield self._queue.get(timeout=poll_s)
+                yield self._queue.get_nowait()
             except queue.Empty:
                 yield None
 

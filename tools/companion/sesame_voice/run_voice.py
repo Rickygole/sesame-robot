@@ -35,6 +35,54 @@ import sys
 _COMPANION_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _COMPANION_DIR)
 
+# Launching via `open` detaches the process from any terminal, so stdout
+# goes nowhere -- the app runs silently and you cannot tell whether it is
+# listening, stuck, or waiting on a permission dialog. Mirror everything
+# to a log file so there is something to watch:
+#
+#     tail -f tools/companion/build/voice.log
+LOG_PATH = os.path.join(_COMPANION_DIR, "build", "voice.log")
+
+
+class _Tee(object):
+    """Writes to the original stream AND the log, flushing every line.
+
+    Unbuffered on purpose: a crash must not swallow the last few lines,
+    which are exactly the ones that explain the crash.
+    """
+
+    def __init__(self, stream, path):
+        self.stream = stream
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            self.fh = open(path, "a", buffering=1)
+        except OSError:
+            self.fh = None  # logging must never be the thing that fails
+
+    def write(self, text):
+        try:
+            self.stream.write(text)
+            self.stream.flush()
+        except (OSError, ValueError):
+            pass
+        if self.fh is not None:
+            try:
+                self.fh.write(text)
+            except (OSError, ValueError):
+                pass
+
+    def flush(self):
+        for target in (self.stream, self.fh):
+            if target is not None:
+                try:
+                    target.flush()
+                except (OSError, ValueError):
+                    pass
+
+
+sys.stdout = _Tee(sys.stdout, LOG_PATH)
+sys.stderr = _Tee(sys.stderr, LOG_PATH)
+
 EXPECTED_BUNDLE_ID = "com.sesame.voice"
 
 NOT_BUNDLED_MESSAGE = """\
@@ -138,16 +186,48 @@ def main():
     session = Session(robot)
     speaker = tts.Speaker()
     mic = mic_speech.MicSpeech(speaker=speaker)
+
+    # Ask for consent BEFORE starting the engine. Skipping this does not
+    # fail loudly -- macOS simply never prompts, the status stays
+    # notDetermined, and recognition returns nothing forever while the
+    # app looks perfectly healthy.
+    mic_ok, mic_status = mic.microphone_authorized()
+    sys.stdout.write("microphone: %s\n" % mic_status)
+    sys.stdout.write("requesting speech recognition access "
+                     "(a dialog may appear -- click OK)...\n")
+    speech_ok, speech_status = mic.request_authorization()
+    sys.stdout.write("speech recognition: %s\n" % speech_status)
+
+    if not speech_ok or not mic_ok:
+        sys.stdout.write(
+            "\nCannot listen without both permissions.\n"
+            "  Fix: System Settings > Privacy & Security > Microphone,\n"
+            "       and > Speech Recognition -- enable 'Sesame Voice'.\n"
+            "  Then run 'make voice-listen' again.\n"
+            "  (Meanwhile 'make voice' works with typed input.)\n")
+        return
+
     mic.start()
     detector = wake.WakeDetector()
+    sys.stdout.write("listening.\n")
 
     try:
         while True:
             detector.reset()
             wake_event = None
+            last_echo = ""
             for update in mic.updates():
                 if update is None:
                     continue
+                # Echo whatever was heard, even when the wake word does
+                # NOT match. Without this the log is empty in three very
+                # different situations -- mic dead, permission missing,
+                # wake word mis-matching -- and there is no way to tell
+                # them apart.
+                text = (update.text or "").strip()
+                if text and text != last_echo:
+                    sys.stdout.write("  heard: %s\n" % text[-90:])
+                    last_echo = text
                 wake_event = detector.feed(update.text)
                 if wake_event is not None:
                     break
