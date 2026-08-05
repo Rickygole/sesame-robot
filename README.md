@@ -80,9 +80,24 @@ failure mode is "I didn't understand", not confidently doing the wrong
 thing to a physical machine.
 
 It understands walking, turning, postures, faces, and context-dependent
-follow-ups ("faster", "again", "the other way"). **It does not hold a
-conversation** — that needs a language model, which is a one-line swap by
-design but is not wired up.
+follow-ups ("faster", "again", "the other way").
+
+For phrasings outside that vocabulary there's an **optional local LLM
+fallback** — free, offline, via [Ollama](https://ollama.com):
+
+```bash
+python3 tools/companion/run.py --brain cascade
+```
+
+Rules always run first; the model is asked only when they come up empty.
+Crucially, **a model can never emit motion** — it picks an intent from
+the same closed vocabulary the rule parser uses, and the intent→command
+translation is identical either way. A model can only choose differently
+among moves that already existed and were already clamped. Hostile
+outputs (a smuggled velocity, a command string, an injection in a slot)
+all validate to "unknown" and emit nothing.
+
+It still isn't a chatbot. It maps what you say onto robot actions.
 
 ## Status
 
@@ -102,8 +117,24 @@ unmeasured. Expect a real calibration session when the robot arrives.
 - [x] WiFi control surface, HTTP API, built-in web UI, OTA
 - [x] NVS-persisted calibration
 - [x] Voice assistant: wake word, on-device speech, intent parsing, TTS
-- [ ] IMU balance and ultrasonic obstacle avoidance — **seam only, not implemented**
-- [ ] Conversational LLM brain — swappable interface exists, not wired
+- [x] IMU body levelling and ultrasonic obstacle stop — both optional, auto-detected
+- [x] Optional local-LLM fallback for out-of-vocabulary phrasings
+
+### What the sensors do and don't do
+
+The IMU **levels the body on uneven ground**. It does not provide balance
+recovery and cannot: with 2 DOF per leg there is no foot-position-preserving
+attitude control, and the crawl gait is already statically stable. Past 35°
+of tilt it stops correcting, because the robot is falling or has been picked
+up and flailing makes it worse.
+
+The rangefinder **stops the robot before it walks into something**. An
+invalid reading means *unknown*, never *clear* — a sensor that has stopped
+answering is not evidence of open space.
+
+> **Wiring warning:** the HC-SR04 echo line drives 5 V and the ESP32 is not
+> 5 V tolerant. It **must** be level-shifted (a 1k/2k divider is enough) or
+> you will damage the pin.
 
 ## Known limitation: 2 DOF per leg
 
