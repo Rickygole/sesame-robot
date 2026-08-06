@@ -62,6 +62,14 @@ class ServoBank {
   // on failure *badChannel receives the offending WIRE channel.
   bool selfTest(uint8_t* badChannel);
 
+  // Diagnostic form: writes the same distinct pulse widths and reports
+  // what EVERY channel read back, rather than stopping at the first
+  // mismatch. "Channel 3 is wrong" and "channels 3-7 are all wrong" have
+  // completely different causes, and the short form cannot tell them
+  // apart.
+  void selfTestReport(int32_t outWant[core::kJointCount],
+                      int32_t outGot[core::kJointCount]);
+
  private:
   core::Calibration cal_;
   core::JointPose last_;

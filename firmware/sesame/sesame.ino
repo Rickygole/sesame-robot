@@ -408,8 +408,23 @@ void setup() {
     // wrong leg moving -- looks exactly like a wiring fault.
     Serial.print(F("FATAL: servo self-test failed on wire channel "));
     Serial.println(bad);
+    // Print EVERY channel, not just the first bad one. One bad channel
+    // and five bad channels have completely different causes.
+    int32_t want[kJointCount];
+    int32_t got[kJointCount];
+    g_bank.selfTestReport(want, got);
+    for (uint8_t i = 0; i < kJointCount; ++i) {
+      Serial.print(F("  ch"));
+      Serial.print(i);
+      Serial.print(F(" gpio"));
+      Serial.print(sesame::kServoPins[i]);
+      Serial.print(F(" want="));
+      Serial.print(want[i]);
+      Serial.print(F(" got="));
+      Serial.print(got[i]);
+      Serial.println(got[i] == want[i] ? F("  ok") : F("  <-- MISMATCH"));
+    }
     Serial.println(F("Expected vendored ESP32Servo 3.0.9 at src/vendor/."));
-    Serial.println(F("Do NOT install ESP32Servo via Library Manager."));
   } else {
     Serial.println(F("servo self-test ok"));
   }
