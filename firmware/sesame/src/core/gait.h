@@ -32,9 +32,24 @@ struct GaitDef {
   float freqHz;                  // cycle frequency at throttle == 1
 };
 
-// Crawl: 3 feet down at all times => statically stable. DEFAULT gait.
+// Crawl: statically stable. DEFAULT gait.
+//
+// Duty 0.80 rather than the textbook 0.75. At exactly 0.75 with 0.25
+// phase offsets there are always EXACTLY three feet down and the
+// transitions are instantaneous -- the robot is never more than one
+// mistimed step from a two-foot moment. 0.80 overlaps each swing, so
+// there are brief windows with all four feet planted and the support
+// polygon never gets thin.
+//
+// Frequency 0.5Hz rather than 0.7Hz for the same reason: more time per
+// step means each foot is planted longer, and the body has longer to
+// settle before the next leg lifts. A slow, deliberate crawl looks and
+// behaves far better on a small robot than a fast one that skitters.
+//
+// Both were relaxed after the first walk on real hardware, which was
+// unstable at the more aggressive values.
 constexpr GaitDef kCrawl{
-    "crawl", {0.00f, 0.50f, 0.25f, 0.75f}, 0.75f, 0.7f};
+    "crawl", {0.00f, 0.50f, 0.25f, 0.75f}, 0.80f, 0.5f};
 // Trot: diagonal leg pairs move together. Dynamically stable only.
 constexpr GaitDef kTrot{"trot", {0.00f, 0.50f, 0.50f, 0.00f}, 0.50f, 1.4f};
 

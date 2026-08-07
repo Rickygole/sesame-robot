@@ -47,8 +47,20 @@ inline void buildLegGeometry(core::LegGeometry out[core::kLegCount]) {
 
 // Default drive parameters, as fractions of leg length so they stay
 // sane if the link lengths are corrected.
-constexpr float kDefaultBodyHeightFrac = 0.50f;
-constexpr float kDefaultStepHeightFrac = 0.15f;
+// Body height as a fraction of leg length. 0.55 rather than 0.50 --
+// standing slightly taller keeps the feet further from the body, which
+// widens the support polygon and leaves more clearance for a swinging
+// foot to pass a planted one.
+constexpr float kDefaultBodyHeightFrac = 0.55f;
+
+// Step height. Lowered from 0.15 after the first walk on hardware.
+//
+// This is the counter-intuitive one: a HIGHER lift is less stable, not
+// more. Raising a foot on a 2-DOF leg also swings it inward (the foot
+// travels on a torus -- height and reach are coupled), so a big lift
+// pulls that corner's support inward exactly when the robot is already
+// down to three feet. A small, brisk lift is steadier.
+constexpr float kDefaultStepHeightFrac = 0.10f;
 
 // If no Drive command arrives within this window, blend back to Stand.
 // A robot that keeps walking because a controller disconnected mid-stride
