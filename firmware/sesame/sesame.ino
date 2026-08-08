@@ -71,7 +71,6 @@ enum class Mode : uint8_t { Hold, Stand, Rest, Manual, Drive, Detached };
 Mode g_mode = Mode::Stand;
 
 JointPose g_desired;
-uint32_t g_seq = 0;
 
 // Safety gate. Every Drive request passes through this BEFORE the gait
 // sees it: envelope clamps the TARGET, slew limits the RATE. Two
@@ -351,8 +350,14 @@ void pollSerial() {
       } else {
         Command cmd;
         if (parseCommand(g_line, &cmd)) {
-          cmd.seq = ++g_seq;
-          handleCommand(cmd);
+          // Route through the mailbox rather than calling handleCommand
+          // directly, so serial shares ONE sequence space with HTTP.
+          // Previously each kept a private counter starting at zero; once
+          // the web UI had streamed a few hundred commands, every serial
+          // command looked stale and the envelope silently refused it.
+          if (!g_mailbox.postCommand(cmd)) {
+            Serial.println(F("err busy -- command queue full"));
+          }
         } else {
           Serial.print(F("err parse: "));
           Serial.println(g_line);
@@ -591,7 +596,7 @@ void loop() {
     st.attached = g_bank.attached();
     st.estopped = g_envelope.estopped();
     st.throttle = g_throttle;
-    st.seq = g_seq;
+    st.seq = g_mailbox.lastSeq();
     st.uptimeMs = millis();
     st.pose = g_bank.lastWritten();
     g_mailbox.publish(st);

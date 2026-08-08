@@ -30,7 +30,6 @@ namespace {
 
 WebServer g_server(80);
 Mailbox* g_mailbox = nullptr;
-uint32_t g_seq = 0;
 
 const char* kModeNames[] = {"hold", "stand", "rest", "manual", "drive",
                             "detached"};
@@ -118,8 +117,8 @@ void handleCmd() {
     sendJson(400, "{\"ok\":false,\"reason\":\"parse\"}");
     return;
   }
-  cmd.seq = ++g_seq;
-
+  // seq is stamped by the mailbox -- one sequence space for all
+  // transports. See Mailbox::postCommand.
   if (!g_mailbox->postCommand(cmd)) {
     // Queue full. Say so rather than dropping silently: a command the
     // caller believes was accepted but never ran is worse than an error.
@@ -128,7 +127,7 @@ void handleCmd() {
   }
   char buf[64];
   snprintf(buf, sizeof(buf), "{\"ok\":true,\"seq\":%lu}",
-           (unsigned long)cmd.seq);
+           (unsigned long)g_mailbox->lastSeq());
   sendJson(200, buf);
 }
 
@@ -136,7 +135,6 @@ void handleEstop() {
   // A separate endpoint so it can never queue behind a slow request.
   core::Command cmd;
   cmd.type = core::CmdType::EStop;
-  cmd.seq = ++g_seq;
   g_mailbox->postCommand(cmd);
   sendJson(200, "{\"ok\":true,\"estopped\":true}");
 }

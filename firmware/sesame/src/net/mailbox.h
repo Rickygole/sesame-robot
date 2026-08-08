@@ -51,7 +51,25 @@ class Mailbox {
   // Non-blocking. Returns false if the queue is full, which the caller
   // must surface as a rejection rather than silently dropping: a command
   // the user believes was accepted but never ran is worse than an error.
-  bool postCommand(const core::Command& cmd);
+  //
+  // STAMPS THE SEQUENCE NUMBER ITSELF, overwriting whatever the caller
+  // put there. Do not set cmd.seq before calling.
+  //
+  // The envelope rejects any command whose seq is not newer than the
+  // last one it saw -- correct anti-replay behaviour, but only if there
+  // is ONE sequence space. There were two: the serial CLI and the HTTP
+  // server each kept a private counter starting at zero. Once the web UI
+  // had streamed a few hundred commands, every serial command arrived
+  // looking centuries old and was silently refused with stale_seq --
+  // the robot ignored the keyboard entirely and sat in stand.
+  //
+  // Centralising it here means a third transport (OTA, BLE, a script)
+  // cannot reintroduce the bug by forgetting to share a counter.
+  bool postCommand(core::Command cmd);
+
+  // Next sequence number, for callers that need to report it back to a
+  // client. Does not consume one.
+  uint32_t lastSeq() const;
 
   // Copies the latest state snapshot.
   RobotState state() const;
